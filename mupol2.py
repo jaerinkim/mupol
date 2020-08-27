@@ -178,3 +178,44 @@ def transform():
         os.system("mv '"+i+"' store"+str(start)+".p")# Assumes that you are using *NIX!
         # For Windows OS, use move instead of mv.
         start+=1
+
+## Use this function to get 'bootDict' with artist IDs, just before running 'seekRec'.
+## output['tracks'] should be used as an argument for 'seekRec'.
+## output['artists'] should be saved for later for artists-tracks network.
+
+def artToTrackDict(artlist):
+    artdict={}
+    output={}
+    for i in artlist:
+        artdict[i]={sp.recommendations(seed_artists=i,limit=100)['tracks']}
+    for i in artdict:
+        rlist=[]
+        for j in artdict[i]['rec']:
+            rlist.append(artdict[i]['rec'][j]['id'])
+            output[i]=rlist
+    return({'tracks': output,'artists': artdict)
+
+
+## Extract relations from pickles. Returns a list of lists; Each list represents an edge.
+## Convenient for making networks but leaves out musical information
+## (e.g. tempo, valence, ...)
+## Use glob-based file names to analyze (e.g. store*). If csv==True, saves a csv file.
+
+def pickleToNet(globexp,csv):
+    output=[]
+    errors=[]
+    todo=glob.glob(globexp)
+    if(csv):
+        plist=open("plist.csv","w")
+        pwriter=csv.writer(plist)
+    for i in todo:
+        inp=cPickle.load(open(i,"rb"))
+        for j in inp.keys():
+           try:
+               output.append([[j,k['id']] for k in inp[j]['rec']])
+           if(csv):
+               pwriter.writerow([[j,k['id']] for k in inp[j]['rec']])
+           except Exception as e:
+               errors.append([j,e])
+        del inp
+    return({output,errors})

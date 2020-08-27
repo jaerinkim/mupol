@@ -6,43 +6,146 @@
 ## Author: Jaerin Kim
 
 library(igraph)
-nrel <- read.csv("local/nrelwoartist.csv",header=FALSE)
-nrelart<-read.csv("local/nrel.csv",header=FALSE)
-nrelfull<-rbind(nrel,nrelart)
+par(family="Liberation Sans")
+nrel <- read.csv("local/netlist/nrelwoartist.csv",header=FALSE)
+nrelart<-read.csv("local/netlist/nrelart.csv",header=FALSE)
+nrelsup<-read.csv("local/netlist/supp.csv",header=FALSE)
+nrelfull<-rbind(nrel,nrelsup)
+nrelfull<-rbind(nrelfull,nrelart)
+
 ## Uncomment to analyze the artist network (artnet)
 ## artnet<-graph_from_data_frame(nrelart,directed=FALSE)
 musicnet<-graph_from_data_frame(nrelfull,directed=FALSE)
 
-## Loading the favorite tracks supporting politician x.
+## Loading the favorite artists among supporters of politicians.
 trump<-read.csv("local/ptrump.csv",header=FALSE)
 sanders<-read.csv("local/psanders.csv",header=FALSE)
 clinton<-read.csv("local/pclinton.csv",header=FALSE)
 cruz<-read.csv("local/pcruz.csv",header=FALSE)
 candidates=c("trump","sanders","clinton","cruz")
+
+## Generating the shortest paths connecting each person
 for (i in candidates){
   ## Trump[,2], etc is artist names in English. These are useless in the analysis.
   ## Use Trump[,1] and distinguish artist IDs from track IDs as follows.
   artists<-eval(parse(text=i))[,1]
   assign(paste0(i,"art"),
          paste0("ART",artists))
-  # assign(paste0(i,"art"),# Remove missing data
-  #        subset(eval(parse(text=paste0(i,"art"))),
-  #               eval(parse(text=paste0(i,"art")))%in%nrelart[,1]))
+  assign(paste0(i,"art"),# Remove missing data
+         subset(eval(parse(text=paste0(i,"art"))),
+                eval(parse(text=paste0(i,"art")))%in%nrelart[,1]))
   assign(paste0(i,"path"),# Find shortest paths between vertices
          shortest_paths(musicnet,eval(parse(text=paste0(i,"art"))),
                         eval(parse(text=paste0(i,"art")))))
   assign(paste0(i,"list"),
          names(unlist(eval(parse(text=paste0(i,"path")))[[1]])))
 }
+minmax<-unique(c(trumplist,clintonlist,sanderslist,cruzlist))
+mmpaths<-shortest_paths(musicnet,minmax,minmax)
+## Remove self-loops
+mmgraph<-subgraph(musicnet,unlist(mmpaths$vpath))
+mmgraph<-delete.vertices(simplify(mmgraph), degree(simplify(mmgraph))==0)
 
-similar<-c()
-for (i in candidates[1:3]){
-  for (j in candidates[1:3]){
-    print(paste(i,j))
-    similar<-c(similar,
-               mean(eval(parse(text=paste0(i,"list")))%in%eval(parse(text=paste0(j,"list")))))
-    }
+## Adding people to the graph
+mmart=c()
+for(i in minmax){
+  if (grepl("ART*",i))mmart<-c(mmart,i)
 }
+mmartv=c()
+for(i in paste0(candidates,"art")){
+  plist=eval(parse(text=i))# A vector of people supporting a candidate.
+  for (j in 1:length(plist)){
+    mmartv<-c(mmartv,
+              paste0(i,j),# A person's ID, e.g. trumpart14
+              plist[j])# The person's favorite artist
+  }
+}
+vnames=vertex_attr(mmgraph)$name
+mmat=matrix(mmartv,nrow=2)
+mmat<-mmat[,mmat[2,]%in%vnames]
+mmgraph<-add_vertices(mmgraph,ncol(mmat),name=mmat[1,])
+mmgraph<-add_edges(mmgraph,as.vector(mmat))
+vnames=vertex_attr(mmgraph)$name
+
+## Run the label propagation algorithm
+mmlabel=rep(-1,ncol(mmat))#unclassified vertices have label<0 
+mmlabel[grepl("trump*",mmat[1,])]<-1
+mmlabel[grepl("sanders*",mmat[1,])]<-2
+mmlabel[grepl("clinton*",mmat[1,])]<-3
+mmlabel[grepl("cruz*",mmat[1,])]<-4
+mmmodel<-cluster_label_prop(mmgraph,
+                            initial=c(rep(-1,length(vnames)-length(mmlabel)),mmlabel),
+                            fixed=c(rep(F,length(vnames)-length(mmlabel)),rep(T,length(mmlabel))))
+mmmodels=list()
+npeople=as.vector(table(mmlabel))
+excsample=matrix(nrow=10000,ncol=round(.1*npeople[1])+round(.1*npeople[2])+round(.1*npeople[3])+round(.1*npeople[4]))
+initial=c(rep(-1,length(vnames)-length(mmlabel)),mmlabel)
+fixed=c(rep(F,length(vnames)-length(mmlabel)),rep(T,length(mmlabel)))
+for (i in 1:10000){
+  nexclude=c(sample(1:npeople[1],round(.1*npeople[1])),
+             sample((npeople[1]+1):(npeople[1]+npeople[2]),round(.1*npeople[2])),
+             sample((npeople[1]+npeople[2]+1):(sum(npeople)-npeople[3]),round(.1*npeople[3])),
+             sample((sum(npeople)-npeople[4]+1):sum(npeople),round(.1*npeople[4]))
+          )##Sample 90% of observations for each trial
+  tempgraph=induced_subgraph(mmgraph,(1:length(vnames))[!1:length(vnames)%in%nexclude])
+  tempinitial=initial[!1:length(vnames)%in%nexclude]
+  tempfixed=fixed[!1:length(vnames)%in%nexclude]
+  excsample[i,]<-nexclude
+  mmmodels[[i]]=cluster_label_prop(tempgraph,initial=tempinitial,fixed=tempfixed)
+}
+
+## Example plot
+mmodel=mmmodels[[10000]]
+modelgraph=induced_subgraph(mmgraph,(1:length(vnames))[!1:length(vnames)%in%nexclude])
+mmcol=mmodel$membership
+cols=c("violet","#80E64D","#E6DB33","cyan")
+mmcol[mmcol==1]<-cols[1]
+mmcol[mmcol==2]<-cols[2]
+mmcol[mmcol==3]<-cols[3]
+mmcol[mmcol==4]<-cols[4]
+plot(modelgraph,vertex.label=NA,vertex.size=1.5,vertex.col=mmcol,vertex.frame.color=mmcol,
+     layout=layout.mds,edge.width=.1)
+legend("topleft", legend=c("Trump", "Sanders","Clinton","Cruz"),
+       fill=cols, cex=.8, box.lty=0)
+trumploc<-sandersloc<-clintonloc<-cruzloc<-NULL
+for (i in candidates){
+  loc<-grepl(i,names(V(mmgraph)))
+  path<-shortest_paths(mmgraph,loc,loc)
+  graph<-subgraph(mmgraph,unique(unlist(path[[1]])))
+  assign(paste0(i,"loc"),loc)
+  assign(paste0(i,"path"),path)
+  assign(paste0(i,"graph"),graph)
+}
+
+for (i in candidates){
+  loc<-mmodel$membership==which(i==candidates)
+  path<-shortest_paths(modelgraph,loc,loc)
+  graph<-subgraph(modelgraph,unique(unlist(path[[1]])))
+  assign(paste0(i,"locm"),loc)
+  assign(paste0(i,"pathm"),path)
+  assign(paste0(i,"graphm"),graph)
+}
+## Trump: What hurts the most
+## Smoke a little smoke
+which.max(eigen_centrality(trumpgraph)$vector)
+which.max(eigen_centrality(trumpgraphm)$vector)
+## "Sanders" cluster became Clinton cluster after learning!
+## This implies some similarity between the two groups.
+## Clinton: Wild world
+## Baby one more time
+which.max(eigen_centrality(sandersgraph)$vector)
+which.max(eigen_centrality(sandersgraphm)$vector)
+## Sanders: Take the money and run
+## Bless the broken road
+which.max(eigen_centrality(clintongraph)$vector)
+which.max(eigen_centrality(clintongraphm)$vector)
+## Cruz
+which.max(eigen_centrality(cruzgraph)$vector)
+which.max(eigen_centrality(cruzgraphm)$vector)
+
+
+
+## Generating simpler plots
 
 trumpnet=shortest_paths(musicnet,trump[,1],trump[,1])
 sandersnet=shortest_paths(musicnet,sanders[,1],sanders[,1])
@@ -108,11 +211,11 @@ dev.off()
 tinyex<-shortest_paths(simpleex4,"TSA",c("NO","CS"))
 tinylist<-names(unlist(tinyex[[1]]))
 tinygraph<-subgraph(musicnet,unique(c(tinylist[2:5],tinylist[8:10])))
-simpletiny<-simpify(tinygraph)
+simpletiny<-simplify(tinygraph)
 tinyg<-tinygraph+graph(matrix(c("TSA",'ART4S9EykWXhStSc15wEx8QFK',
-               "NO",'ART0u2FHSq3ln94y5Q57xazwf',
-               "CS",'ART2DlGxzQSjYe5N6G9nkYghR'),
-             ncol=3),directed=FALSE)
+                                "NO",'ART0u2FHSq3ln94y5Q57xazwf',
+                                "CS",'ART2DlGxzQSjYe5N6G9nkYghR'),
+                              ncol=3),directed=FALSE)
 simpletinyg<-simplify(tinyg)
 tinylabel<-c("But For the Grace of God - Keith Urban","Up! - Shania Twain","Battlefield - Jordin Sparks","Keith Urban","Jennifer Lopez","Celine Dion","New Observation","Trump Supporter","Clinton Supporter")
 tinyshape<-c(rep("circle",3),rep("square",3),rep("vrectangle",3))
